@@ -8,47 +8,46 @@ namespace Cascade
     {
         static Sprite circle, glow, square, softSquare, ring, triangle, rounded, star;
         static Sprite heart, diamond, club, spade, chip, ticket, cardFace, scratch, flame;
-        static Material trailMat;
 
         // Les formes sont calculées en pixels (bord anti-aliasé de ~1,5 px) et générées en haute résolution
         // avec mipmaps : elles restent nettes en plein écran comme en petite fenêtre.
-        public static Sprite Circle => circle ??= Make(256, (x, y, px) => Disc(x, y, 0.5f - px, px * 1.5f));
-        public static Sprite Glow => glow ??= Make(256, (x, y, px) => { float d = Dist(x, y); float a = Mathf.Clamp01(1f - d / 0.5f); return a * a; });
-        public static Sprite Square => square ??= Make(16, (x, y, px) => 1f, mip: false);
-        public static Sprite SoftSquare => softSquare ??= Make(128, (x, y, px) =>
+        public static Sprite Circle => circle = Alive(circle) ?? Make(256, (x, y, px) => Disc(x, y, 0.5f - px, px * 1.5f));
+        public static Sprite Glow => glow = Alive(glow) ?? Make(256, (x, y, px) => { float d = Dist(x, y); float a = Mathf.Clamp01(1f - d / 0.5f); return a * a; });
+        public static Sprite Square => square = Alive(square) ?? Make(16, (x, y, px) => 1f, mip: false);
+        public static Sprite SoftSquare => softSquare = Alive(softSquare) ?? Make(128, (x, y, px) =>
         {
             float dx = Mathf.Abs(x - 0.5f) * 2f, dy = Mathf.Abs(y - 0.5f) * 2f;
             return Mathf.Clamp01((1f - dx) * 4f) * Mathf.Clamp01((1f - dy) * 4f);
         });
-        public static Sprite Ring => ring ??= Make(256, (x, y, px) =>
+        public static Sprite Ring => ring = Alive(ring) ?? Make(256, (x, y, px) =>
         {
             float d = Dist(x, y);
             return Mathf.Clamp01((0.04f - Mathf.Abs(d - 0.44f)) / (px * 1.5f));
         });
-        public static Sprite Triangle => triangle ??= Make(128, (x, y, px) =>
+        public static Sprite Triangle => triangle = Alive(triangle) ?? Make(128, (x, y, px) =>
         {
             // pointe vers le bas, bords anti-aliasés
             float half = y * 0.5f;
             float edge = half - Mathf.Abs(x - 0.5f);
             return Mathf.Clamp01(edge / (px * 1.5f)) * Mathf.Clamp01((1f - y) / (px * 1.5f) + 1f);
         });
-        public static Sprite Star => star ??= Make(128, (x, y, px) =>
+        public static Sprite Star => star = Alive(star) ?? Make(128, (x, y, px) =>
         {
             float dx = Mathf.Abs(x - 0.5f), dy = Mathf.Abs(y - 0.5f);
             return Mathf.Clamp01(1f - (dx * dy) * 60f) * Mathf.Clamp01(1f - Dist(x, y) * 2f);
         });
 
         // ---------- Symboles de cartes (dessinés par code : les polices n'en ont pas) ----------
-        public static Sprite Heart => heart ??= Make(128, (x, y, px) => HeartShape(x, y, px));
-        public static Sprite Diamond => diamond ??= Make(128, (x, y, px) =>
+        public static Sprite Heart => heart = Alive(heart) ?? Make(128, (x, y, px) => HeartShape(x, y, px));
+        public static Sprite Diamond => diamond = Alive(diamond) ?? Make(128, (x, y, px) =>
             Mathf.Clamp01((0.42f - (Mathf.Abs(x - 0.5f) * 1.25f + Mathf.Abs(y - 0.5f))) / (px * 1.5f)));
-        public static Sprite Spade => spade ??= Make(128, (x, y, px) =>
+        public static Sprite Spade => spade = Alive(spade) ?? Make(128, (x, y, px) =>
         {
             float body = HeartShape(x, 1f - y + 0.08f, px);
             float stem = Mathf.Clamp01((0.06f - Mathf.Abs(x - 0.5f) + (0.3f - y) * 0.35f) / (px * 1.5f)) * (y < 0.42f && y > 0.1f ? 1f : 0f);
             return Mathf.Max(body, stem);
         });
-        public static Sprite Club => club ??= Make(128, (x, y, px) =>
+        public static Sprite Club => club = Alive(club) ?? Make(128, (x, y, px) =>
         {
             float a = Disc(x, y - 0.17f, 0.17f, px * 1.5f, 0.5f, 0.5f);
             float b = Disc(x + 0.17f, y + 0.02f, 0.17f, px * 1.5f, 0.5f, 0.5f);
@@ -69,7 +68,7 @@ namespace Cascade
             => Mathf.Clamp01((r - Vector2.Distance(new Vector2(x, y), new Vector2(cx, cy))) / soft);
 
         /// <summary>Décor de jeton de casino (à poser en blanc sur un disque coloré) : 8 encoches au bord + anneau intérieur.</summary>
-        public static Sprite Chip => chip ??= Make(256, (x, y, px) =>
+        public static Sprite Chip => chip = Alive(chip) ?? Make(256, (x, y, px) =>
         {
             float d = Dist(x, y);
             float ang = Mathf.Atan2(y - 0.5f, x - 0.5f) / (Mathf.PI * 2f) + 0.5f;
@@ -79,7 +78,7 @@ namespace Cascade
         });
 
         /// <summary>Ticket de tombola : rectangle avec encoches demi-cercle sur les côtés et pointillés de découpe.</summary>
-        public static Sprite Ticket => ticket ??= Make(256, (x, y, px) =>
+        public static Sprite Ticket => ticket = Alive(ticket) ?? Make(256, (x, y, px) =>
         {
             float notchL = Vector2.Distance(new Vector2(x, y), new Vector2(0f, 0.5f));
             float notchR = Vector2.Distance(new Vector2(x, y), new Vector2(1f, 0.5f));
@@ -90,7 +89,7 @@ namespace Cascade
         });
 
         /// <summary>Flammèche (flammes de dépassement de score).</summary>
-        public static Sprite Flame => flame ??= Make(128, (x, y, px) =>
+        public static Sprite Flame => flame = Alive(flame) ?? Make(128, (x, y, px) =>
         {
             float dx = (x - 0.5f) / Mathf.Lerp(0.42f, 0.05f, y);
             float a = Mathf.Clamp01(1f - dx * dx - Mathf.Pow(Mathf.Abs(y - 0.35f) * 1.6f, 2f));
@@ -121,17 +120,12 @@ namespace Cascade
             }
         }
 
-        public static Material TrailMaterial
+        public static Material TrailMaterial => Mats.Cached("Trail", () =>
         {
-            get
-            {
-                if (trailMat != null) return trailMat;
-                var sh = Shader.Find("Sprites/Default");
-                if (sh == null) sh = Shader.Find("Universal Render Pipeline/2D/Sprite-Unlit-Default");
-                trailMat = new Material(sh);
-                return trailMat;
-            }
-        }
+            var sh = Shader.Find("Sprites/Default");
+            if (sh == null) sh = Shader.Find("Universal Render Pipeline/2D/Sprite-Unlit-Default");
+            return new Material(sh);
+        });
 
         public static SpriteRenderer MakeRenderer(string name, Transform parent, Sprite sprite, int order)
         {
@@ -143,6 +137,12 @@ namespace Cascade
             sr.sortingOrder = order;
             return sr;
         }
+
+        /// <summary>
+        /// Les sprites générés vivent hors de la scène : quand Unity les décharge (sortie du mode Play sans rechargement
+        /// du domaine), la référence statique devient un objet détruit que « ?? » ne voit pas. On la remet à null.
+        /// </summary>
+        static Sprite Alive(Sprite s) => s != null ? s : null;
 
         static float Dist(float x, float y) => Vector2.Distance(new Vector2(x, y), new Vector2(0.5f, 0.5f));
         static float Disc(float x, float y, float r, float soft) => Mathf.Clamp01((r - Dist(x, y)) / soft);

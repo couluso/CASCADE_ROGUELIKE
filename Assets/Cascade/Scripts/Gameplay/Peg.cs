@@ -9,20 +9,21 @@ namespace Cascade
     /// </summary>
     public class Peg : MonoBehaviour
     {
+        [Tooltip("Position dans la grille de la RunState (col < 0 : butoir de mur).")]
         public int row, col;
         public PegType type;
-        public bool disabled;     // Boss Gardien des Pics
-        public bool fragile;      // Boss Mur de Glace : se brise au premier contact
-        public int burning;       // lancers restants enflammé
-        public int contacts;      // contacts pendant la manche (glace)
-        public bool broken;
+        [System.NonSerialized] public bool disabled;     // Boss Gardien des Pics
+        [System.NonSerialized] public bool fragile;      // Boss Mur de Glace : se brise au premier contact
+        [System.NonSerialized] public int burning;       // lancers restants enflammé
+        [System.NonSerialized] public int contacts;      // contacts pendant la manche (glace)
+        [System.NonSerialized] public bool broken;
         public bool JustBroke { get; private set; }
 
-        CircleCollider2D col2d;
-        Renderer pin, hole;
-        Transform capRoot;
-        Renderer[] capParts = new Renderer[0];
-        PegType builtCap = (PegType)(-1);
+        [SerializeField, HideInInspector] CircleCollider2D col2d;
+        [SerializeField, HideInInspector] Renderer pin, hole;
+        [SerializeField, HideInInspector] Transform capRoot;
+        [SerializeField, HideInInspector] Renderer[] capParts = new Renderer[0];
+        [SerializeField, HideInInspector] PegType builtCap = (PegType)(-1);
         float pop, flash;
         bool animating;
 
@@ -61,7 +62,11 @@ namespace Cascade
         {
             if (builtCap == type) return;
             builtCap = type;
-            for (int i = capRoot.childCount - 1; i >= 0; i--) Destroy(capRoot.GetChild(i).gameObject);
+            for (int i = capRoot.childCount - 1; i >= 0; i--)
+            {
+                var child = capRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(child); else DestroyImmediate(child);
+            }
             var parts = new System.Collections.Generic.List<Renderer>();
             const float z = -0.14f;
             float r = BoardLayout.PegRadius;
@@ -98,6 +103,13 @@ namespace Cascade
                     break;
             }
             capParts = parts.ToArray();
+        }
+
+        /// <summary>Nouvelle run : oublie aussi les flammes des lancers précédents.</summary>
+        public void ResetForRun()
+        {
+            burning = 0;
+            ResetForRound();
         }
 
         public void ResetForRound()
@@ -176,18 +188,4 @@ namespace Cascade
             if (pop <= 0f && flash <= 0f) animating = false;
         }
     }
-
-    /// <summary>Case d'arrivée.</summary>
-    public class Slot : MonoBehaviour
-    {
-        public int index;
-        void OnTriggerEnter2D(Collider2D other)
-        {
-            var ball = other.attachedRigidbody != null ? other.attachedRigidbody.GetComponent<BallController>() : null;
-            if (ball != null) ball.Land(index);
-        }
-    }
-
-    /// <summary>Marqueur des murs latéraux.</summary>
-    public class Wall : MonoBehaviour { }
 }

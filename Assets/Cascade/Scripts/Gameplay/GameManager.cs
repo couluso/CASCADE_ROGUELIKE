@@ -7,16 +7,24 @@ namespace Cascade
 {
     /// <summary>
     /// Chef d'orchestre d'une run : seuils, manches, lancers, score, boutique, charmes, fin de partie.
+    /// Les autres systèmes (planche, lanceur, effets, interface) sont des objets de la scène, reliés dans l'inspecteur.
     /// </summary>
-    public class GameManager : MonoBehaviour
+    public partial class GameManager : MonoBehaviour
     {
         public static GameManager Instance { get; private set; }
 
+        [SerializeField] Board board;
+        [SerializeField] Launcher launcher;
+        [SerializeField] Juice juice;
+        [SerializeField] GameUI ui;
+        [Tooltip("0 = graine aléatoire. Mets une valeur fixe pour rejouer la même run (boutiques, boss, tirages).")]
+        [SerializeField] int fixedSeed;
+
         public RunState Run { get; private set; }
-        public Board Board { get; private set; }
-        public Launcher Launcher { get; private set; }
-        public Juice Juice { get; private set; }
-        public GameUI UI { get; private set; }
+        public Board Board => board;
+        public Launcher Launcher => launcher;
+        public Juice Juice => juice;
+        public GameUI UI => ui;
         public Shop Shop { get; } = new Shop();
 
         public Phase Phase { get; private set; }
@@ -24,6 +32,11 @@ namespace Cascade
         // ---------- État de la manche ----------
         public readonly List<BallInstance> drawPile = new List<BallInstance>();
         public readonly List<BallController> activeBalls = new List<BallController>();
+        /// <summary>Dernière bille lâchée : c'est elle que pilotent coup de pouce, relance et frein.</summary>
+        BallController lastLaunched;
+        float lastLaunchTime;
+        /// <summary>Délai minimal entre deux lâchers (on peut lâcher pendant qu'une autre bille tombe).</summary>
+        public const float LaunchCooldown = 0.35f;
         public int ThrowsLeft { get; private set; }
         public int RelancesLeft { get; private set; }
         public double RoundScore { get; private set; }
@@ -32,6 +45,8 @@ namespace Cascade
         public float Tilt { get; private set; }
         public bool BrakeUsed { get; private set; }
         public bool RoundWon { get; private set; }
+        /// <summary>La run qui vient de se terminer a battu un record (seuils franchis ou meilleure bille).</summary>
+        public bool NewRecord { get; private set; }
         public ScoreContext LastContext { get; private set; }
         public ScoreContext LastResolved { get; private set; }
 
@@ -63,20 +78,41 @@ namespace Cascade
         float charmSlowTimer;   // Charme du Ralenti (temps réel)
         float resolveDelay;
         float phaseSince;       // évite qu'un clic sur un bouton lâche aussi une bille
+        float baseFixedDeltaTime;
 
-        public void Init(Board board, Launcher launcher, Juice juice, GameUI ui)
+        /// <summary>Relie les systèmes de la scène (utilisé par l'outil qui construit la scène).</summary>
+        public void Wire(Board board, Launcher launcher, Juice juice, GameUI ui)
         {
-            Instance = this;
-            Board = board; Launcher = launcher; Juice = juice; UI = ui;
+            this.board = board; this.launcher = launcher; this.juice = juice; this.ui = ui;
         }
 
-        /// <summary>Graine imposée pour la prochaine run (0 = aléatoire).</summary>
-        public int PendingSeed { get; set; }
+        void Awake()
+        {
+            Instance = this;
+            Application.targetFrameRate = 120;
+            Physics2D.queriesHitTriggers = false;
+            Physics2D.gravity = new Vector2(0f, -9.81f);
+            baseFixedDeltaTime = Time.fixedDeltaTime;
+
+            if (board == null) board = FindAnyObjectByType<Board>();
+            if (launcher == null) launcher = FindAnyObjectByType<Launcher>();
+            if (juice == null) juice = FindAnyObjectByType<Juice>();
+            if (ui == null) ui = FindAnyObjectByType<GameUI>();
+            if (board == null || launcher == null || juice == null || ui == null)
+                Debug.LogError("[CASCADE] Il manque un système dans la scène (Board, Launcher, Juice ou GameUI). Utilise Tools > Cascade > Construire la scène.", this);
+        }
 
         void Start()
         {
-            NewRun(PendingSeed != 0 ? PendingSeed : (int?)null);
-            PendingSeed = 0;
+            NewRun(fixedSeed != 0 ? fixedSeed : (int?)null);
+        }
+
+        void OnDestroy()
+        {
+            if (Instance != this) return;
+            Instance = null;
+            Time.timeScale = 1f;
+            Time.fixedDeltaTime = baseFixedDeltaTime;
         }
 
         public void NewRun(int? seed = null)
@@ -86,7 +122,7 @@ namespace Cascade
             Run = new RunState(seed ?? System.Environment.TickCount);
             pendingTallies.Clear();
             Tally = null;
-            Board.Build(Run, UI.WorldCanvas);
+            Board.Setup(Run, UI.WorldCanvas);
             ShowSeuilSelect();
             UI.Toast("Bille de départ : " + Run.StarterBall.Name, Run.StarterBall.Color);
         }
@@ -136,7 +172,7 @@ namespace Cascade
                     {
                         var s = spots[Run.RandomInt(spots.Count)];
                         Run.pegs[s.r][s.c] = PegType.Multi;
-                        Board.RebuildPegs(Run);
+                        Board.ApplyPegTypes(Run);
                     }
                     break;
             }
@@ -169,25 +205,58 @@ namespace Cascade
 
         void RollWind()
         {
-            Wind = Run.HasBoss(BossType.NorthWind) ? (Random.value < 0.5f ? -1f : 1f) * Random.Range(4f, 9f) : 0f;
+            // Tiré avec la graine de la run : une graine fixe rejoue aussi le vent.
+            Wind = Run.HasBoss(BossType.NorthWind) ? (Run.RandomValue() < 0.5 ? -1f : 1f) * (4f + 5f * (float)Run.RandomValue()) : 0f;
         }
 
         public BallInstance PeekNextBall() => drawPile.Count > 0 ? drawPile[0] : null;
 
-        public int PreviewBounces
+        /// <summary>Une manche est en cours (visée, chute, ou ciblage d'un charme lancé pendant la visée).</summary>
+        public bool InRound => Phase == Phase.Aiming || Phase == Phase.Falling || (Phase == Phase.Targeting && phaseBeforeTargeting == Phase.Aiming);
+
+        /// <summary>Multiplicateur de vitesse du va-et-vient du lanceur (reliques, L'Aveugle).</summary>
+        public float SweepSpeed
         {
             get
             {
-                if (Run.HasBoss(BossType.Blind)) return 0;
-                return 2 + Run.relics.Sum(r => r.ExtraPreviewBounces);
+                float k = 1f;
+                foreach (var r in Run.relics) k *= r.SweepSpeedMultiplier;
+                if (Run.HasBoss(BossType.Blind)) k *= 1.35f;
+                return k;
             }
+        }
+
+        /// <summary>
+        /// « Chaleur » du lancer en cours, de 0 à 1 : score de la bille par rapport à la cible (échelle log).
+        /// Plus elle monte, plus les sons, particules et secousses des rebonds sont intenses.
+        /// </summary>
+        public float Heat(ScoreContext c)
+        {
+            if (c == null || Run == null || Run.Target <= 0) return 0f;
+            double ratio = System.Math.Max(0, c.Preview / Run.Target);
+            return Mathf.Clamp01((float)(System.Math.Log10(1 + 10 * ratio) / System.Math.Log10(11)));
         }
 
         public bool HasBrake => Run.relics.Any(r => r.GrantsBrake);
 
+        /// <summary>Une bille en jeu est coincée : l'interface demande de secouer (R).</summary>
+        public bool AnyBallStuck
+        {
+            get { foreach (var b in activeBalls) if (b != null && !b.Resolved && b.IsStuck) return true; return false; }
+        }
+
+        /// <summary>
+        /// On peut lâcher pendant la visée, mais aussi pendant qu'une bille tombe encore.
+        /// La manche se joue jusqu'à la dernière bille, même cible atteinte : le surplus rapporte des tickets.
+        /// </summary>
+        public bool CanLaunch => (Phase == Phase.Aiming || Phase == Phase.Falling)
+            && ThrowsLeft > 0 && drawPile.Count > 0 && !ModalOpen
+            && Time.unscaledTime - lastLaunchTime > LaunchCooldown;
+
         public void Launch(float x)
         {
-            if (Phase != Phase.Aiming || ThrowsLeft <= 0 || drawPile.Count == 0) return;
+            if (!CanLaunch) return;
+            lastLaunchTime = Time.unscaledTime;
             var ball = drawPile[0];
             drawPile.RemoveAt(0);
             ThrowsLeft--;
@@ -197,9 +266,10 @@ namespace Cascade
             if (ball.edition == Edition.Foil) ctx.chips += 50;
             if (ball.edition == Edition.Holo) ctx.mult += 10;
 
-            float jitter = Random.Range(-0.02f, 0.02f);
+            float jitter = (float)(Run.RandomValue() * 0.04 - 0.02);   // graine de la run
             float radiusScale = Run.HasBoss(BossType.Colossus) ? 1.2f : 1f;
             var bc = SpawnBall(ctx, new Vector2(x + jitter, BoardLayout.DropY), Vector2.zero, radiusScale);
+            lastLaunched = bc;
             LastContext = ctx;
             foreach (var r in Run.relics.ToList()) r.OnBallLaunched(this, ctx);
 
@@ -229,118 +299,6 @@ namespace Cascade
             Juice.PlayBumper();
         }
 
-        // ================= Événements de chute =================
-
-        public void OnPegHit(BallController ball, Peg peg)
-        {
-            var c = ball.ctx;
-            peg.Hit();
-            if (peg.type == PegType.WallBump) return;
-            c.pegHits++;
-            Vector3 at = peg.transform.position;
-
-            if (!peg.disabled)
-            {
-                double chipMul = 1;
-                if (Run.HasBoss(BossType.Banker)) chipMul *= 2;
-                if (Run.HasBoss(BossType.Colossus)) chipMul *= 5;
-
-                switch (peg.type)
-                {
-                    case PegType.Standard: c.AddChips(Catalog.StandardChips * chipMul, at); break;
-                    case PegType.Multi: c.AddMult(1, at); break;
-                    case PegType.Gold: c.AddChips(Catalog.GoldChips * chipMul, at); AddTickets(1, null); Juice.PlayCoin(); break;
-                    case PegType.Bumper: c.AddChips(Catalog.BumperChips * chipMul, at); ball.ApplyBumper(at); Juice.PlayBumper(); Juice.Shake(0.08f); break;
-                    case PegType.Ice: c.AddChips(Catalog.IceChips * chipMul, at); break;
-                    case PegType.Spiky: c.AddChips(Catalog.SpikyChips * chipMul, at); c.AddMult(-1, at); break;
-                }
-
-                if (peg.burning > 0) c.AddChips(Catalog.BurningBonusChips * chipMul, at);
-                if (peg.JustBroke && peg.type == PegType.Ice) c.MulMult(2, at);
-
-                switch (c.ball.kind)
-                {
-                    case BallKind.Heavy: c.chips += 3 * chipMul; break;
-                    case BallKind.Light: if (c.pegHits > 10) c.mult += 0.5; break;
-                    case BallKind.Fire: peg.Ignite(3); break;
-                }
-
-                foreach (var r in Run.relics.ToList()) r.OnPegHit(this, c, peg);
-            }
-
-            // Musique : chaque pic joue une note, la mélodie monte avec le mult.
-            int note = Mathf.Clamp(c.pegHits % 6 + Mathf.FloorToInt((float)System.Math.Log(c.mult, 1.6)), 0, 14);
-            Juice.PegNote(note, peg.type, peg.disabled);
-            Juice.Burst(at, Catalog.Peg(peg.type).color, peg.disabled ? 2 : 5, 1.6f);
-            UI.Refresh();
-        }
-
-        public void OnWallHit(BallController ball)
-        {
-            var c = ball.ctx;
-            if (c.ball.kind == BallKind.Bouncy) c.AddMult(2, ball.transform.position);
-            foreach (var r in Run.relics.ToList()) r.OnWallHit(this, c);
-            Juice.PlayWall();
-            UI.Refresh();
-        }
-
-        public void OnDirectionChange(BallController ball)
-        {
-            foreach (var r in Run.relics.ToList()) r.OnDirectionChange(this, ball.ctx);
-        }
-
-        /// <summary>Fin d'une bille : case atteinte (slot >= 0) ou perdue.</summary>
-        public void ResolveBall(BallController ball, int slot, bool lost, string reason = null, bool keepChipsAndMult = false)
-        {
-            var c = ball.ctx;
-            if (c.resolved) return;
-            c.resolved = true;
-            Vector3 at = ball.transform.position;
-
-            if (lost)
-            {
-                c.slotIndex = -1;
-                c.slotValue = 1;
-                c.finalScore = keepChipsAndMult ? c.chips * c.mult : 0;
-                UI.Toast(reason ?? "Bille perdue", Palette.Red);
-                Juice.PlayFail();
-            }
-            else
-            {
-                c.slotIndex = slot;
-                if (c.ball.kind == BallKind.Golden)
-                {
-                    AddTickets(Catalog.GoldenTickets, null);
-                    c.slotValue = 1;
-                    c.finalScore = c.chips;
-                    Juice.PlayCoin();
-                }
-                else
-                {
-                    if (c.ball.edition == Edition.Polychrome) c.MulMult(1.5, at);
-                    if (c.ball.kind == BallKind.Crystal) c.FinalX(3, at);
-                    foreach (var r in Run.relics.ToList()) r.OnBallLanded(this, c, slot);
-                    c.slotValue = Board.EffectiveSlotValue(slot, this);
-                    c.finalScore = c.chips * c.mult * c.slotValue * c.xmult;
-                }
-                Board.FlashSlot(slot);
-            }
-
-            c.finalScore = System.Math.Floor(c.finalScore);
-            Run.bestBallScore = System.Math.Max(Run.bestBallScore, c.finalScore);
-
-            if (!lost) Juice.CelebrateBall(c, Run.Target, at);
-
-            activeBalls.Remove(ball);
-            Destroy(ball.gameObject, 0.05f);
-
-            if (Run.HasBoss(BossType.Cheater)) Board.ShuffleSlots(Run);
-            if (c.finalScore > 0) pendingTallies.Enqueue(c);
-            else LastResolved = c;
-            UI.Refresh();
-            resolveDelay = 0.4f;
-        }
-
         // ================= Boucle =================
 
         void Update()
@@ -355,12 +313,13 @@ namespace Cascade
             {
                 case Phase.Aiming:
                     Launcher.active = true;
-                    bool armed = Time.unscaledTime - phaseSince > 0.2f && !ModalOpen;
-                    if (armed && ((InputShim.LeftClick && !InputShim.PointerOverUI()) || InputShim.Drop)) Launch(Launcher.AimX);
+                    if (Time.unscaledTime - phaseSince > 0.2f && DropPressed) Launch(Launcher.AimX);
                     break;
 
                 case Phase.Falling:
-                    Launcher.active = false;
+                    // Le lanceur reste actif : on peut lâcher la bille suivante sans attendre.
+                    Launcher.active = ThrowsLeft > 0 && drawPile.Count > 0;
+                    if (Launcher.active && DropPressed) Launch(Launcher.AimX);
                     HandleFallingInput();
                     UpdateDramaticSlowMo();
                     if (activeBalls.Count == 0 && !Tallying)
@@ -389,8 +348,9 @@ namespace Cascade
                 Tally = pendingTallies.Dequeue();
                 TallyTime = 0f;
                 double before = RoundScore;
-                TallyOnFire = before < Run.Target && before + Tally.finalScore >= Run.Target;
-                TallyInferno = Tally.finalScore >= Run.Target;
+                // Flammes seulement si une bille ÉCLATE la cible à elle seule : 1,5x (enfer à 3x).
+                TallyOnFire = Tally.finalScore >= 1.5 * Run.Target;
+                TallyInferno = Tally.finalScore >= 3 * Run.Target;
                 // Les gros coups durent un peu plus longtemps : on savoure.
                 TallyDuration = TallyInferno ? 2.3f : TallyOnFire ? 1.9f : 1.25f;
                 if (TallyOnFire || TallyInferno) Juice.PlayFire();
@@ -412,6 +372,7 @@ namespace Cascade
                 {
                     RoundWon = true;
                     Juice.PlayWin();
+                    if (ThrowsLeft > 0 && drawPile.Count > 0) UI.Toast("Cible atteinte ! Le surplus rapporte des tickets", Palette.Gold);
                 }
                 Tally = null;
                 TallyOnFire = TallyInferno = false;
@@ -422,9 +383,12 @@ namespace Cascade
         /// <summary>Instants (secondes) des étapes du décompte : jetons x mult, x case, x bonus, = total.</summary>
         public static readonly float[] TallySteps = { 0.05f, 0.35f, 0.6f, 0.85f };
 
+        bool DropPressed => (InputShim.LeftClick && !InputShim.PointerOverUI()) || InputShim.Drop;
+
         void HandleFallingInput()
         {
-            var main = activeBalls.Count > 0 ? activeBalls[0] : null;
+            var main = lastLaunched != null && activeBalls.Contains(lastLaunched) ? lastLaunched
+                : activeBalls.Count > 0 ? activeBalls[activeBalls.Count - 1] : null;
             if (main == null) return;
 
             if (InputShim.NudgeLeft) main.Nudge(-1f);
@@ -445,7 +409,7 @@ namespace Cascade
                 }
             }
 
-            if ((InputShim.Relance || InputShim.RightClick) && activeBalls.Count == 1 && main.ctx.pegHits == 0 && RelancesLeft > 0)
+            if ((InputShim.Relance || InputShim.RightClick) && !main.IsTwinChild && main.ctx.pegHits == 0 && RelancesLeft > 0)
                 DoRelance(main);
 
             if (InputShim.Brake && HasBrake && !BrakeUsed)
@@ -468,7 +432,8 @@ namespace Cascade
             Destroy(ball.gameObject);
             Juice.PlayClick();
             UI.Toast("Relance", Palette.Cyan);
-            SetPhase(Phase.Aiming);
+            lastLaunchTime = 0f;
+            if (activeBalls.Count == 0) SetPhase(Phase.Aiming);
         }
 
         void UpdateDramaticSlowMo()
@@ -495,23 +460,23 @@ namespace Cascade
             if (slowMoTimer > 0f) ts *= 0.3f;
             if (charmSlowTimer > 0f) ts *= 0.4f;
             Time.timeScale = ts;
-            Time.fixedDeltaTime = Mathf.Max(0.004f, 0.02f * ts);
+            Time.fixedDeltaTime = Mathf.Max(0.004f, baseFixedDeltaTime * ts);
         }
 
         void AfterAllBallsResolved()
         {
             RollWind();
-            if (RoundWon) { WinRound(); return; }
-            if (ThrowsLeft <= 0 || drawPile.Count == 0) { LoseRun(); return; }
-            SetPhase(Phase.Aiming);
-            UI.Refresh();
+            // La manche ne se termine qu'une fois toutes les billes jouées.
+            if (ThrowsLeft > 0 && drawPile.Count > 0) { SetPhase(Phase.Aiming); UI.Refresh(); return; }
+            if (RoundScore >= Run.Target) WinRound(); else LoseRun();
         }
 
         void WinRound()
         {
             var lines = new List<(string, int)>();
             lines.Add((Run.SeuilName + " franchi", Run.BaseReward));
-            if (ThrowsLeft > 0) lines.Add(($"Billes restantes ({ThrowsLeft})", ThrowsLeft));
+            int surplus = RunState.SurplusBonus(RoundScore, Run.Target);
+            if (surplus > 0) lines.Add(($"Surplus x{RoundScore / Run.Target:0.0#}", surplus));
             int interest = Run.Interest;
             if (interest > 0) lines.Add(("Intérêts (1 par 5 tickets, max 5)", interest));
             int total = lines.Sum(l => l.Item2);
@@ -526,7 +491,7 @@ namespace Cascade
         public void ContinueAfterResults()
         {
             Juice.PlayClick();
-            if (Run.IsFinalSeuil) { SetPhase(Phase.Victory); UI.ShowVictory(); return; }
+            if (Run.IsFinalSeuil) { NewRecord = GameSettings.RecordRun(Run.seuilsCleared, Run.bestBallScore); SetPhase(Phase.Victory); UI.ShowVictory(); return; }
             OpenShop();
         }
 
@@ -538,202 +503,10 @@ namespace Cascade
 
         void LoseRun()
         {
+            NewRecord = GameSettings.RecordRun(Run.seuilsCleared, Run.bestBallScore);
             SetPhase(Phase.GameOver);
             Juice.PlayFail();
             UI.ShowGameOver();
-        }
-
-        // ================= Boutique =================
-
-        void OpenShop()
-        {
-            Shop.Open(Run);
-            SetPhase(Phase.Shop);
-            UI.ShowShop();
-        }
-
-        public bool Buy(ShopOffer o)
-        {
-            if (o.sold) return false;
-            int price = Shop.Price(o, Run);
-            if (Run.tickets < price) { Juice.PlayFail(); return false; }
-            switch (o.kind)
-            {
-                case ShopOffer.Kind.Relic:
-                    if (Run.relics.Count >= Run.relicSlots) { UI.Toast("Plus de place pour une relique (vends-en une)", Palette.Red); return false; }
-                    Run.relics.Add(o.relic);
-                    break;
-                case ShopOffer.Kind.Ball:
-                    Run.bag.Add(o.ball);
-                    break;
-                case ShopOffer.Kind.Charm:
-                    if (Run.charms.Count >= Run.charmSlots) { UI.Toast("Plus de place pour un charme", Palette.Red); return false; }
-                    Run.charms.Add(o.charm);
-                    break;
-                case ShopOffer.Kind.Pack:
-                    Shop.OpenPack(Run);
-                    if (Shop.packChoices.Count == 0) { UI.Toast("Plus aucune relique disponible", Palette.Red); return false; }
-                    break;
-            }
-            Run.tickets -= price;
-            o.sold = true;
-            Juice.PlayBuy();
-            if (o.kind == ShopOffer.Kind.Pack) UI.ShowPack();
-            UI.Refresh();
-            UI.RefreshShop();
-            return true;
-        }
-
-        public void PickFromPack(Relic r)
-        {
-            if (r != null)
-            {
-                if (Run.relics.Count >= Run.relicSlots) { UI.Toast("Plus de place : vends une relique d'abord", Palette.Red); return; }
-                Run.relics.Add(r);
-                Juice.PlayBuy();
-            }
-            Shop.packChoices = null;
-            UI.HidePack();
-            UI.Refresh();
-            UI.RefreshShop();
-        }
-
-        public void Reroll()
-        {
-            if (Run.freeRerolls > 0) Run.freeRerolls--;
-            else
-            {
-                if (Run.tickets < Shop.rerollCost) { Juice.PlayFail(); return; }
-                Run.tickets -= Shop.rerollCost;
-                Shop.rerollCost++;
-            }
-            Shop.Generate(Run);
-            Juice.PlayClick();
-            UI.Refresh();
-            UI.RefreshShop();
-        }
-
-        public void SellRelic(Relic r)
-        {
-            if (Phase != Phase.Shop || !Run.relics.Contains(r)) return;
-            Run.relics.Remove(r);
-            Run.tickets += r.SellValue;
-            Juice.PlayCoin();
-            UI.Toast($"{r.Name} vendue (+{r.SellValue})", Palette.Gold);
-            UI.Refresh();
-            UI.RefreshShop();
-        }
-
-        public void MoveRelic(Relic r, int dir)
-        {
-            int i = Run.relics.IndexOf(r);
-            int j = i + dir;
-            if (i < 0 || j < 0 || j >= Run.relics.Count) return;
-            (Run.relics[i], Run.relics[j]) = (Run.relics[j], Run.relics[i]);
-            Juice.PlayClick();
-            UI.Refresh();
-        }
-
-        public bool RemoveBallFromBag(BallInstance b)
-        {
-            if (Phase != Phase.Shop) return false;
-            if (Run.bag.Count <= 5) { UI.Toast("Le sac doit garder au moins 5 billes", Palette.Red); Juice.PlayFail(); return false; }
-            if (Run.tickets < Shop.RemoveBallCost) { UI.Toast("Pas assez de tickets", Palette.Red); Juice.PlayFail(); return false; }
-            Run.tickets -= Shop.RemoveBallCost;
-            Run.bag.Remove(b);
-            Juice.PlayBuy();
-            UI.Refresh();
-            UI.RefreshBag();
-            UI.RefreshShop();
-            return true;
-        }
-
-        public void LeaveShop()
-        {
-            Juice.PlayClick();
-            Run.Advance();
-            ShowSeuilSelect();
-        }
-
-        // ================= Charmes =================
-
-        public bool CanUseCharm(CharmType c)
-        {
-            var info = Catalog.Charm(c);
-            if (info.duringFall) return Phase == Phase.Falling;
-            if (info.roundOnly) return Phase == Phase.Aiming;
-            if (info.needsPegTarget) return Phase == Phase.Aiming || Phase == Phase.Shop || Phase == Phase.SeuilSelect;
-            return Phase == Phase.Aiming || Phase == Phase.Shop || Phase == Phase.SeuilSelect;
-        }
-
-        public void UseCharm(int index)
-        {
-            if (index < 0 || index >= Run.charms.Count) return;
-            var c = Run.charms[index];
-            if (!CanUseCharm(c)) { UI.Toast("Pas maintenant", Palette.Red); Juice.PlayFail(); return; }
-            var info = Catalog.Charm(c);
-
-            if (info.needsPegTarget)
-            {
-                pendingCharmIndex = index;
-                phaseBeforeTargeting = Phase;
-                SetPhase(Phase.Targeting);
-                UI.ShowTargeting(info.name + " : clique sur un pic (clic droit pour annuler)");
-                return;
-            }
-
-            switch (c)
-            {
-                case CharmType.Hourglass: ThrowsLeft++; if (drawPile.Count == 0) drawPile.Add(new BallInstance(BallKind.Standard)); break;
-                case CharmType.Clone:
-                    var next = PeekNextBall();
-                    if (next == null) { UI.Toast("Aucune bille à cloner", Palette.Red); return; }
-                    Run.bag.Add(next.Clone());
-                    break;
-                case CharmType.Gift:
-                    if (Run.relics.Count >= Run.relicSlots) { UI.Toast("Plus de place pour une relique", Palette.Red); return; }
-                    var r = RelicCatalog.Roll(Run, new List<string>(), Rarity.Common);
-                    if (r != null) { Run.relics.Add(r); UI.Toast("Cadeau : " + r.Name, Palette.Cyan); }
-                    break;
-                case CharmType.Gamble:
-                    if (Run.RandomValue() < 0.5) { int gain = Mathf.Min(20, Run.tickets); AddTickets(gain, null); UI.Toast($"Pari gagné ! +{gain}", Palette.Gold); }
-                    else { int loss = Run.tickets / 2; Run.tickets -= loss; UI.Toast($"Pari perdu... -{loss}", Palette.Red); }
-                    break;
-                case CharmType.SlowMo: charmSlowTimer = 3f; break;
-            }
-            Run.charms.RemoveAt(index);
-            Juice.PlayBuy();
-            UI.Refresh();
-            if (Phase == Phase.Shop) UI.RefreshShop();
-        }
-
-        void HandleTargeting()
-        {
-            if (InputShim.RightClick) { EndTargeting(false); return; }
-            if (!InputShim.LeftClick || InputShim.PointerOverUI()) return;
-
-            Vector2 world = Arcade.Instance != null ? Arcade.Instance.MouseOnBoard() : Vector2.zero;
-            var peg = Board.PegAt(world);
-            if (peg == null || peg.col < 0) return;
-
-            var charm = Run.charms[pendingCharmIndex];
-            PegType newType = Catalog.BrushResult(charm);
-            Run.pegs[peg.row][peg.col] = newType;
-            peg.SetType(newType);
-            Juice.Burst(peg.transform.position, Catalog.Peg(newType).color, 20, 3f);
-            Juice.PlayBuy();
-            Run.charms.RemoveAt(pendingCharmIndex);
-            EndTargeting(true);
-        }
-
-        void EndTargeting(bool used)
-        {
-            pendingCharmIndex = -1;
-            SetPhase(phaseBeforeTargeting);
-            UI.HideTargeting();
-            UI.Refresh();
-            if (Phase == Phase.Shop) UI.RefreshShop();
-            if (!used) Juice.PlayClick();
         }
 
         // ================= Divers =================
@@ -745,13 +518,13 @@ namespace Cascade
             UI.TicketPulse(n);
         }
 
-        public void NotifyRelicFired(Relic r) => UI.RelicFired(r);
+        public void NotifyRelicFired(Relic r) { if (UI != null) UI.RelicFired(r); }
 
         void SetPhase(Phase p)
         {
             if (p != Phase) phaseSince = Time.unscaledTime;
             Phase = p;
-            UI?.Refresh();
+            if (UI != null) UI.Refresh();
         }
     }
 }

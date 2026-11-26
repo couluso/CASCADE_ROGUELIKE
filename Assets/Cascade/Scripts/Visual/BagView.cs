@@ -17,18 +17,20 @@ namespace Cascade
     }
 
     /// <summary>
-    /// Le sac de billes : un bocal en verre posé devant la borne, rempli des vraies billes du sac (physique 3D).
+    /// Le sac de billes : un bocal en verre gris fumé posé devant la borne, rempli des vraies billes du sac (physique 3D).
     /// Glisser la souris fait tourner le bocal (les billes roulent dedans). Survoler une bille affiche son effet.
     /// En boutique, cliquer une bille la retire du sac.
+    /// Le bocal est un objet de la scène (désactivé tant que le sac est fermé) ; les billes sont créées à l'ouverture.
     /// </summary>
+    [DefaultExecutionOrder(-20)]
     public class BagView : MonoBehaviour
     {
         public static BagView Instance { get; private set; }
         public bool IsOpen { get; private set; }
 
-        GameManager gm;
-        Transform jar;
-        Rigidbody jarBody;
+        [SerializeField] GameManager gm;
+        [SerializeField] Transform jar;
+        [SerializeField] Rigidbody jarBody;
         readonly List<BagBall> balls = new List<BagBall>();
         Quaternion targetRot;
         Vector2 lastMouse, downMouse;
@@ -38,14 +40,21 @@ namespace Cascade
         PhysMat3D ballMat;
 
         static readonly Vector3 JarPos = new Vector3(0f, 5.1f, -5.5f);
+        const float JarTilt = 18f;
         const float JarRadius = 2.1f, JarHalfHeight = 1.7f, BallR = 0.3f;
 
-        public void Init(GameManager gm)
+        public void SetGameManager(GameManager manager) => gm = manager;
+
+        void Awake()
         {
             Instance = this;
-            this.gm = gm;
+            if (gm == null) gm = FindAnyObjectByType<GameManager>();
             ballMat = new PhysMat3D("BagBall") { bounciness = 0.25f, dynamicFriction = 0.3f, staticFriction = 0.3f };
+            if (jar == null) BuildJar();
+            jar.gameObject.SetActive(false);
         }
+
+        void OnDestroy() { if (Instance == this) Instance = null; }
 
         public void Open(bool allowRemove)
         {
@@ -53,12 +62,15 @@ namespace Cascade
             IsOpen = true;
             removeMode = allowRemove;
             gm.ModalOpen = true;
-            Build();
+            targetRot = Quaternion.Euler(JarTilt, 0f, 0f);
+            jar.SetPositionAndRotation(JarPos, targetRot);
+            jar.gameObject.SetActive(true);
+            FillJar();
         }
 
         public void Close()
         {
-            if (jar != null) Destroy(jar.gameObject);
+            if (jar != null) jar.gameObject.SetActive(false);
             foreach (var b in balls) if (b != null) Destroy(b.gameObject);
             balls.Clear();
             hovered = null;
@@ -67,23 +79,40 @@ namespace Cascade
             if (gm != null) gm.ModalOpen = false;
         }
 
-        void Build()
+        /// <summary>Bocal en verre fumé (visuel + parois de collision) sous cet objet, désactivé.</summary>
+        public void BuildJar()
         {
             jar = new GameObject("BagJar").transform;
-            jar.position = JarPos;
-            targetRot = Quaternion.Euler(18f, 0f, 0f);
-            jar.rotation = targetRot;
+            jar.SetParent(transform, false);
+            jar.SetPositionAndRotation(JarPos, Quaternion.Euler(JarTilt, 0f, 0f));
             jarBody = jar.gameObject.AddComponent<Rigidbody>();
             jarBody.isKinematic = true;
             jarBody.interpolation = RigidbodyInterpolation.Interpolate;
 
-            // Visuel : bocal en verre, cerclages en laiton, couvercle
-            var glass = Mats.Prim(PrimitiveType.Cylinder, jar, Vector3.zero, new Vector3(JarRadius * 2f, JarHalfHeight, JarRadius * 2f), Mats.Glass, "Glass");
-            glass.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight, 0f), new Vector3(JarRadius * 2.12f, 0.08f, JarRadius * 2.12f), Mats.Brass, "RingTop");
-            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, -JarHalfHeight, 0f), new Vector3(JarRadius * 2.12f, 0.08f, JarRadius * 2.12f), Mats.Brass, "RingBottom");
-            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight + 0.12f, 0f), new Vector3(JarRadius * 1.6f, 0.06f, JarRadius * 1.6f), Mats.Lacquer, "Lid");
-            Mats.Prim(PrimitiveType.Sphere, jar, new Vector3(0f, JarHalfHeight + 0.32f, 0f), Vector3.one * 0.35f, Mats.Brass, "Knob");
+            // Verre gris fumé, assez dense pour qu'on voie bien la paroi ; reflets verticaux sur le devant
+            NoShadow(Mats.Prim(PrimitiveType.Cylinder, jar, Vector3.zero, new Vector3(JarRadius * 2f, JarHalfHeight, JarRadius * 2f), Mats.JarGlass, "Glass"));
+            for (int i = 0; i < 3; i++)
+            {
+                float a = (-118f + i * 14f) * Mathf.Deg2Rad;
+                var hl = Mats.Prim(PrimitiveType.Cube, jar, new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)) * (JarRadius + 0.01f),
+                    new Vector3(i == 1 ? 0.22f : 0.09f, JarHalfHeight * 1.7f, 0.01f), Mats.GlassHighlight, "Highlight");
+                hl.transform.localRotation = Quaternion.Euler(0f, -a * Mathf.Rad2Deg + 90f, 0f);
+                NoShadow(hl);
+            }
+            // Fond épais en verre et lèvre du goulot
+            NoShadow(Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, -JarHalfHeight + 0.08f, 0f), new Vector3(JarRadius * 2f, 0.1f, JarRadius * 2f), Mats.JarGlassThick, "GlassBottom"));
+            NoShadow(Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight - 0.12f, 0f), new Vector3(JarRadius * 2.04f, 0.1f, JarRadius * 2.04f), Mats.JarGlassThick, "Lip"));
+            // Cerclages en laiton, couvercle laqué, socle en bois
+            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight, 0f), new Vector3(JarRadius * 2.12f, 0.1f, JarRadius * 2.12f), Mats.Brass, "RingTop");
+            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, -JarHalfHeight, 0f), new Vector3(JarRadius * 2.12f, 0.1f, JarRadius * 2.12f), Mats.Brass, "RingBottom");
+            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight + 0.14f, 0f), new Vector3(JarRadius * 1.9f, 0.08f, JarRadius * 1.9f), Mats.Lacquer, "Lid");
+            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, JarHalfHeight + 0.26f, 0f), new Vector3(JarRadius * 1.2f, 0.06f, JarRadius * 1.2f), Mats.Brass, "LidTop");
+            Mats.Prim(PrimitiveType.Sphere, jar, new Vector3(0f, JarHalfHeight + 0.45f, 0f), Vector3.one * 0.38f, Mats.Brass, "Knob");
+            Mats.Prim(PrimitiveType.Cylinder, jar, new Vector3(0f, -JarHalfHeight - 0.18f, 0f), new Vector3(JarRadius * 2.3f, 0.12f, JarRadius * 2.3f), Mats.DarkWood, "Base");
+            // Étiquette sur le devant
+            var label = Mats.Get("JarLabel", new Color(0.85f, 0.75f, 0.5f), 0f, 0.3f);
+            var lab = Mats.Prim(PrimitiveType.Cube, jar, new Vector3(0f, -0.45f, 0f) + new Vector3(0f, 0f, -1f) * (JarRadius + 0.02f), new Vector3(1.4f, 0.75f, 0.02f), label, "Label");
+            NoShadow(lab);
 
             // Collisions : paroi en 16 panneaux + fond + couvercle
             const int sides = 16;
@@ -99,8 +128,14 @@ namespace Cascade
                 bc.size = new Vector3(panelW, JarHalfHeight * 2f + 0.4f, 0.3f);
             }
             AddCap(JarHalfHeight + 0.15f);
-            AddCap(-JarHalfHeight - 0.15f);
+            AddCap(-JarHalfHeight - 0.15f + 0.1f);
+            jar.gameObject.SetActive(false);
+        }
 
+        static void NoShadow(GameObject go) => go.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+
+        void FillJar()
+        {
             // Les billes du sac
             var rnd = new System.Random(gm.Run.bag.Count * 31 + 7);
             int i0 = 0;
@@ -108,7 +143,7 @@ namespace Cascade
             {
                 float ang = (float)rnd.NextDouble() * Mathf.PI * 2f;
                 float rad = (float)rnd.NextDouble() * (JarRadius - 0.6f);
-                float h = -JarHalfHeight + 0.4f + (i0 % 6) * 0.55f + (float)rnd.NextDouble() * 0.2f;
+                float h = -JarHalfHeight + 0.5f + (i0 % 6) * 0.55f + (float)rnd.NextDouble() * 0.2f;
                 var local = new Vector3(Mathf.Cos(ang) * rad, Mathf.Min(h, JarHalfHeight - 0.4f), Mathf.Sin(ang) * rad);
                 SpawnBall(b, jar.TransformPoint(local));
                 i0++;
@@ -128,6 +163,7 @@ namespace Cascade
         {
             var info = Catalog.Ball(b.kind);
             var go = new GameObject("BagBall_" + b.kind);
+            go.transform.SetParent(transform, false);
             go.transform.position = pos;
             var col = go.AddComponent<SphereCollider>();
             col.radius = BallR * info.radiusMul;

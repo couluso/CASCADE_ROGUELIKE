@@ -9,18 +9,25 @@ namespace Cascade
     /// Le « juice » : sons synthétisés (chaque pic est une note d'une gamme pentatonique),
     /// particules, tremblement de caméra, popups de score, paliers WOW / INCROYABLE / BROKEN.
     /// </summary>
+    [DefaultExecutionOrder(-40)]
     public class Juice : MonoBehaviour
     {
         [Range(0f, 1f)] public float masterVolume = 0.55f;
+        [Tooltip("Force des secousses de caméra (0 : aucune, 1 : forte). Futur réglage des options.")]
+        [Range(0f, 1f)] public float shakeStrength = 0.5f;
+        [Tooltip("Caméra secouée (enfant du CameraRig : le tremblement agit en position locale).")]
+        [SerializeField] Camera cam;
+        [Tooltip("Canvas monde des popups de score.")]
+        [SerializeField] Transform worldCanvas;
+        [SerializeField] VhsFeed vhs;
 
         AudioSource[] sources;
         int nextSource;
         AudioClip[] notes, multiNotes;
-        AudioClip thud, wall, bumper, coin, iceBreak, drop, land, cash, win, fail, tilt, shake, click, buy, fire;
+        AudioClip thud, wall, bumper, coin, iceBreak, drop, land, cash, win, fail, tilt, shake, click, buy, fire, relic;
 
-        Camera cam;
         float shakeAmp;
-        public VhsFeed Vhs { get; set; }
+        public VhsFeed Vhs => vhs;
 
         // Particules (pool léger, sans ParticleSystem)
         class Particle { public SpriteRenderer sr; public Vector2 v; public float life, max, size; }
@@ -32,15 +39,23 @@ namespace Cascade
         class Popup { public Text text; public Vector3 start; public float life, max, scale; }
         readonly List<Popup> popups = new List<Popup>();
         readonly Stack<Text> freePopups = new Stack<Text>();
-        Transform worldCanvas;
 
         const int SampleRate = 44100;
 
-        public void Init(Camera camera, Transform worldCanvas)
+        /// <summary>Relie les effets aux objets de la scène (utilisé par l'outil qui construit la scène).</summary>
+        public void Wire(Camera camera, Transform popupCanvas, VhsFeed feed)
         {
-            cam = camera;   // enfant du CameraRig : le tremblement agit en position locale
-            this.worldCanvas = worldCanvas;
+            cam = camera; worldCanvas = popupCanvas; vhs = feed;
+        }
+
+        void Awake()
+        {
+            if (GameSettings.TryGetMasterVolume(out var vol)) masterVolume = vol;
+            if (cam == null) cam = Arcade.Instance != null ? Arcade.Instance.Cam : Camera.main;
+            if (worldCanvas == null && GameUI.Instance != null) worldCanvas = GameUI.Instance.WorldCanvas;
+            if (vhs == null) vhs = FindAnyObjectByType<VhsFeed>();
             particleRoot = new GameObject("Particles").transform;
+            particleRoot.SetParent(transform, false);
 
             sources = new AudioSource[14];
             for (int i = 0; i < sources.Length; i++)
@@ -82,6 +97,7 @@ namespace Cascade
             click = Tone("click", 1200f, 0.04f, 60f, new[] { 1f });
             buy = Chain("buy", new[] { 783.99f, 1174.66f }, 0.07f, 0.3f);
             fire = Sweep("fire", 90f, 260f, 0.9f, 0.9f);
+            relic = Chain("relic", new[] { 1046.5f, 1318.5f, 1568f, 2093f }, 0.055f, 0.45f, noise: 0.05f);
         }
 
         void Play(AudioClip clip, float vol = 1f, float pitch = 1f)
@@ -93,15 +109,19 @@ namespace Cascade
             s.PlayOneShot(clip, vol * masterVolume);
         }
 
-        public void PegNote(int index, PegType type, bool disabled)
+        /// <summary>Note d'un pic. heat (0 à 1) : chaleur du lancer, plus fort et une octave en renfort quand ça chauffe.</summary>
+        public void PegNote(int index, PegType type, bool disabled, float heat = 0f)
         {
             if (disabled) { Play(thud, 0.5f); return; }
             index = Mathf.Clamp(index, 0, 14);
-            if (type == PegType.Multi) Play(multiNotes[index], 0.75f);
-            else Play(notes[index], 0.55f, Random.Range(0.995f, 1.005f));
+            var bank = type == PegType.Multi ? multiNotes : notes;
+            float vol = (type == PegType.Multi ? 0.55f : 0.4f) + 0.45f * heat;
+            Play(bank[index], vol, Random.Range(0.99f, 1.01f));
+            // 5 notes de la gamme pentatonique = une octave
+            if (heat > 0.66f) Play(bank[Mathf.Min(index + 5, 14)], vol * (heat - 0.5f), 1f);
         }
 
-        public void PlayWall() => Play(wall, 0.5f);
+        public void PlayWall(float heat = 0f) => Play(wall, 0.4f + 0.4f * heat, 1f + 0.2f * heat);
         public void PlayBumper() => Play(bumper, 0.6f);
         public void PlayCoin() => Play(coin, 0.6f);
         public void PlayIceBreak() => Play(iceBreak, 0.5f);
@@ -114,6 +134,8 @@ namespace Cascade
         public void PlayClick() => Play(click, 0.4f);
         public void PlayBuy() => Play(buy, 0.6f);
         public void PlayFire() => Play(fire, 0.55f);
+        /// <summary>Carillon d'une nouvelle relique.</summary>
+        public void PlayRelic() => Play(relic, 0.55f);
         /// <summary>Clic de décompte : chaque étape un peu plus aiguë.</summary>
         public void PlayTick(float step) => Play(click, 0.7f, 0.8f + step * 0.9f);
 
@@ -263,7 +285,7 @@ namespace Cascade
 
             shakeAmp = Mathf.MoveTowards(shakeAmp, 0f, dt * 1.6f);
             if (cam != null)
-                cam.transform.localPosition = (Vector3)(Random.insideUnitCircle * shakeAmp * 0.35f);
+                cam.transform.localPosition = (Vector3)(Random.insideUnitCircle * Mathf.Min(shakeAmp, 0.8f) * 0.35f * shakeStrength);
 
             for (int i = particles.Count - 1; i >= 0; i--)
             {

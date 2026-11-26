@@ -10,8 +10,8 @@ namespace Cascade
     [RequireComponent(typeof(Rigidbody2D))]
     public class BallController : MonoBehaviour
     {
-        public ScoreContext ctx;
-        public bool IsTwinChild;
+        [System.NonSerialized] public ScoreContext ctx;
+        [System.NonSerialized] public bool IsTwinChild;
 
         GameManager gm;
         Rigidbody2D rb;
@@ -25,7 +25,14 @@ namespace Cascade
         Peg lastPeg;
         float lastPegTime;
         float lastVxSign;
-        float stillTime;
+        // Détection de blocage : position relevée toutes les 0,3 s sur 1,5 s
+        readonly Vector2[] stuckSamples = new Vector2[5];
+        int stuckSampleCount, stuckSampleIndex;
+        float stuckSampleTimer;
+        /// <summary>La bille ne bouge presque plus depuis 1,5 s : le joueur doit secouer la table (R).</summary>
+        public bool IsStuck { get; private set; }
+        public float StuckTime { get; private set; }
+        const float StuckSampleStep = 0.3f, StuckDistance = 0.35f, StuckAutoFreeAfter = 12f;
         float frozenUntil;
         bool frozen;
         Vector2 frozenVelocity;
@@ -62,7 +69,7 @@ namespace Cascade
             var mat = Mats.Get("Ball_" + ctx.ball.kind, bodyColor, 0.85f, 0.88f, new Color(0.01f, 0.01f, 0.01f));
             body = Mats.Prim(PrimitiveType.Sphere, transform, Vector3.zero, Vector3.one * radius * 2f, mat, "Body").GetComponent<Renderer>();
             var edition = ctx.ball.edition != Edition.None ? Catalog.EditionColor(ctx.ball.edition) : Color.black;
-            Mats.Tint(body, bodyColor, edition * 0.8f + info.color * (ctx.ball.kind == BallKind.Standard ? 0f : 0.12f));
+            Mats.Tint(body, bodyColor, RestEmission());
 
             // Petite lumière portée : la bille éclaire les pics qu'elle frôle.
             glowLight = new GameObject("BallLight").AddComponent<Light>();
@@ -124,16 +131,42 @@ namespace Cascade
                 lastVxSign = s;
             }
 
-            // Anti-blocage : une bille immobile est poussée vers le centre.
-            if (v.sqrMagnitude < 0.09f) stillTime += Time.fixedDeltaTime; else stillTime = 0f;
-            if (stillTime > 0.6f)
-            {
-                stillTime = 0f;
-                Velocity = new Vector2(transform.position.x > 0 ? -1.6f : 1.6f, 1.2f);
-            }
+            UpdateStuck();
 
             // Sécurité
-            if (transform.position.y < -2f || ctx.airTime > 25f) gm.ResolveBall(this, -1, lost: true, reason: "Perdue");
+            if (transform.position.y < -2f || ctx.airTime > 60f) gm.ResolveBall(this, -1, lost: true, reason: "Perdue");
+        }
+
+        /// <summary>
+        /// Bille coincée : elle a parcouru moins de StuckDistance en 1,5 s. On prévient le joueur (secouer avec R) ;
+        /// au bout de 12 s sans succès, une petite poussée évite de bloquer la partie.
+        /// </summary>
+        void UpdateStuck()
+        {
+            stuckSampleTimer += Time.fixedDeltaTime;
+            if (stuckSampleTimer >= StuckSampleStep)
+            {
+                stuckSampleTimer = 0f;
+                stuckSamples[stuckSampleIndex] = transform.position;
+                stuckSampleIndex = (stuckSampleIndex + 1) % stuckSamples.Length;
+                stuckSampleCount = Mathf.Min(stuckSampleCount + 1, stuckSamples.Length);
+                bool stuck = stuckSampleCount == stuckSamples.Length;
+                if (stuck)
+                {
+                    Vector2 here = transform.position;
+                    foreach (var p in stuckSamples)
+                        if ((p - here).sqrMagnitude > StuckDistance * StuckDistance) { stuck = false; break; }
+                }
+                IsStuck = stuck;
+            }
+            StuckTime = IsStuck ? StuckTime + Time.fixedDeltaTime : 0f;
+            if (StuckTime > StuckAutoFreeAfter)
+            {
+                StuckTime = 0f;
+                stuckSampleCount = 0;
+                IsStuck = false;
+                Velocity = new Vector2(transform.position.x > 0 ? -1.6f : 1.6f, 1.2f);
+            }
         }
 
         void OnCollisionEnter2D(Collision2D collision)
@@ -188,7 +221,7 @@ namespace Cascade
         public void Shake(float strength)
         {
             if (Resolved) return;
-            float side = Random.value < 0.5f ? -1f : 1f;
+            float side = gm.Run.RandomValue() < 0.5 ? -1f : 1f;   // graine de la run
             Velocity += new Vector2(side * strength, strength * 0.8f);
         }
 
@@ -208,8 +241,14 @@ namespace Cascade
             frozen = false;
             rb.bodyType = RigidbodyType2D.Dynamic;
             Velocity = frozenVelocity * 0.5f;
+            Mats.Tint(body, bodyColor, RestEmission());
+        }
+
+        /// <summary>Lueur normale de la bille : couleur de son édition + légère teinte de son type.</summary>
+        Color RestEmission()
+        {
             var edition = ctx.ball.edition != Edition.None ? Catalog.EditionColor(ctx.ball.edition) : Color.black;
-            Mats.Tint(body, bodyColor, edition * 0.8f);
+            return edition * 0.8f + info.color * (ctx.ball.kind == BallKind.Standard ? 0f : 0.12f);
         }
 
         public void ApplyBumper(Vector2 from)

@@ -17,10 +17,10 @@ namespace Cascade
         public static bool RightClick => Mouse.current != null && Mouse.current.rightButton.wasPressedThisFrame;
         public static bool NudgeLeft => K(Key.A) || K(Key.Q) || K(Key.LeftArrow);
         public static bool NudgeRight => K(Key.D) || K(Key.RightArrow);
-        public static bool Shake => K(Key.Space);
-        public static bool Relance => K(Key.R);
+        public static bool Shake => K(Key.R);
+        public static bool Relance => K(Key.E);
         public static bool Brake => K(Key.F);
-        public static bool Drop => K(Key.Enter) || K(Key.S) || K(Key.DownArrow);
+        public static bool Drop => K(Key.Space) || K(Key.Enter);
         public static bool ToggleVhs => K(Key.V);
         public static bool LeftHeld => Mouse.current != null && Mouse.current.leftButton.isPressed;
         public static bool LeftReleased => Mouse.current != null && Mouse.current.leftButton.wasReleasedThisFrame;
@@ -30,10 +30,10 @@ namespace Cascade
         public static bool RightClick => Input.GetMouseButtonDown(1);
         public static bool NudgeLeft => Input.GetKeyDown(KeyCode.A) || Input.GetKeyDown(KeyCode.Q) || Input.GetKeyDown(KeyCode.LeftArrow);
         public static bool NudgeRight => Input.GetKeyDown(KeyCode.D) || Input.GetKeyDown(KeyCode.RightArrow);
-        public static bool Shake => Input.GetKeyDown(KeyCode.Space);
-        public static bool Relance => Input.GetKeyDown(KeyCode.R);
+        public static bool Shake => Input.GetKeyDown(KeyCode.R);
+        public static bool Relance => Input.GetKeyDown(KeyCode.E);
         public static bool Brake => Input.GetKeyDown(KeyCode.F);
-        public static bool Drop => Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.DownArrow);
+        public static bool Drop => Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return);
         public static bool ToggleVhs => Input.GetKeyDown(KeyCode.V);
         public static bool LeftHeld => Input.GetMouseButton(0);
         public static bool LeftReleased => Input.GetMouseButtonUp(0);

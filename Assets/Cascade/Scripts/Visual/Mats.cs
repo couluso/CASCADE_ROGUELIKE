@@ -30,16 +30,58 @@ namespace Cascade
         /// <summary>Matériau éclairé. metal/smooth entre 0 et 1, émission optionnelle (néons, ampoules).</summary>
         public static Material Get(string key, Color color, float metal, float smooth, Color emission = default)
         {
-            if (cache.TryGetValue(key, out var m) && m != null) return m;
-            m = new Material(Lit) { name = key };
-            m.color = color;
-            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
-            if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", metal);
-            if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", smooth);
-            if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smooth);
-            if (emission.maxColorComponent > 0f) SetEmission(m, emission);
+            return Cached(key, () =>
+            {
+                var m = new Material(Lit) { name = key };
+                m.color = color;
+                if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
+                if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", metal);
+                if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", smooth);
+                if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smooth);
+                if (emission.maxColorComponent > 0f) SetEmission(m, emission);
+                return m;
+            });
+        }
+
+        /// <summary>Dossier des matériaux enregistrés quand la scène est construite dans l'éditeur.</summary>
+        public const string AssetFolder = "Assets/Cascade/Resources/Materials";
+
+        /// <summary>
+        /// Matériau partagé : d'abord l'asset (Resources/Materials/key), sinon créé par code.
+        /// Hors mode Play (construction de la scène), le matériau créé est enregistré comme asset :
+        /// la scène peut alors le référencer et on peut le retoucher dans l'inspecteur.
+        /// </summary>
+        public static Material Cached(string key, System.Func<Material> create)
+        {
+            if (cache.TryGetValue(key, out var m) && m != null && IsUsable(m)) return m;
+            m = Resources.Load<Material>("Materials/" + key);
+            if (m == null)
+            {
+                m = create();
+                m.name = key;
+#if UNITY_EDITOR
+                if (!Application.isPlaying)
+                {
+                    if (!UnityEditor.AssetDatabase.IsValidFolder(AssetFolder))
+                        UnityEditor.AssetDatabase.CreateFolder("Assets/Cascade/Resources", "Materials");
+                    UnityEditor.AssetDatabase.CreateAsset(m, $"{AssetFolder}/{key}.mat");
+                }
+#endif
+            }
             cache[key] = m;
             return m;
+        }
+
+        /// <summary>
+        /// Hors mode Play, seul un asset peut être référencé par la scène : un matériau créé pendant une partie
+        /// (resté en cache, le domaine n'étant pas rechargé) serait perdu à l'enregistrement.
+        /// </summary>
+        static bool IsUsable(Material m)
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying) return UnityEditor.EditorUtility.IsPersistent(m);
+#endif
+            return true;
         }
 
         public static void SetEmission(Material m, Color emission)
@@ -60,39 +102,50 @@ namespace Cascade
             r.SetPropertyBlock(mpb);
         }
 
-        /// <summary>Verre transparent (Standard en mode Transparent, ou URP Lit en surface transparente).</summary>
-        public static Material Glass
+        /// <summary>
+        /// Matériau translucide (alpha de la couleur), URP Lit en surface transparente ou Standard en mode Fade.
+        /// doubleSided : on voit aussi la face intérieure (tissu, verre), en URP seulement.
+        /// </summary>
+        public static Material Transparent(string key, Color color, float smooth, bool doubleSided = false, Color emission = default)
         {
-            get
+            return Cached(key, () =>
             {
-                if (cache.TryGetValue("Glass", out var g) && g != null) return g;
-                var m = new Material(Lit) { name = "Glass" };
-                var c = new Color(0.75f, 0.88f, 1f, 0.16f);
-                m.color = c;
-                if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
-                if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0.95f);
-                if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", 0.95f);
-                if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0.1f);
+                var m = new Material(Lit) { name = key };
+                m.color = color;
+                if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
+                if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smooth);
+                if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", smooth);
+                if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
                 if (IsURP)
                 {
                     m.SetFloat("_Surface", 1f);
                     m.SetFloat("_Blend", 0f);
                     m.SetOverrideTag("RenderType", "Transparent");
                     m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    if (m.HasProperty("_SrcBlendAlpha")) m.SetFloat("_SrcBlendAlpha", (float)BlendMode.One);
+                    if (m.HasProperty("_DstBlendAlpha")) m.SetFloat("_DstBlendAlpha", (float)BlendMode.OneMinusSrcAlpha);
+                    if (doubleSided && m.HasProperty("_Cull")) { m.SetFloat("_Cull", (float)CullMode.Off); m.doubleSidedGI = true; }
                 }
                 else
                 {
-                    m.SetFloat("_Mode", 3f);
-                    m.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+                    m.SetFloat("_Mode", 2f);
+                    m.EnableKeyword("_ALPHABLEND_ON");
                 }
-                m.SetInt("_SrcBlend", IsURP ? (int)BlendMode.SrcAlpha : (int)BlendMode.One);
+                m.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
                 m.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
                 m.SetInt("_ZWrite", 0);
                 m.renderQueue = 3000;
-                cache["Glass"] = m;
+                if (emission.maxColorComponent > 0f) SetEmission(m, emission);
                 return m;
-            }
+            });
         }
+
+        // ---------- Bocal du sac : verre gris fumé, bien visible mais on voit les billes à travers ----------
+        public static Material JarGlass => Transparent("JarGlass", new Color(0.55f, 0.58f, 0.62f, 0.38f), 0.92f, true, new Color(0.03f, 0.035f, 0.04f));
+        /// <summary>Fond et lèvre du bocal : verre épais, plus dense.</summary>
+        public static Material JarGlassThick => Transparent("JarGlassThick", new Color(0.5f, 0.55f, 0.6f, 0.7f), 0.95f, false, new Color(0.04f, 0.05f, 0.055f));
+        /// <summary>Reflets verticaux sur la paroi (bandes claires).</summary>
+        public static Material GlassHighlight => Transparent("GlassHighlight", new Color(1f, 1f, 1f, 0.55f), 1f, false, new Color(0.35f, 0.37f, 0.4f));
 
         // ---------- Matériaux de la borne ----------
         public static Material Chrome => Get("Chrome", new Color(0.82f, 0.84f, 0.88f), 0.9f, 0.82f);
@@ -125,7 +178,7 @@ namespace Cascade
             if (meshes.TryGetValue(t, out var m) && m != null) return m;
             var tmp = GameObject.CreatePrimitive(t);
             m = tmp.GetComponent<MeshFilter>().sharedMesh;
-            if (immediate) Object.DestroyImmediate(tmp); else Object.Destroy(tmp);
+            if (immediate || !Application.isPlaying) Object.DestroyImmediate(tmp); else Object.Destroy(tmp);
             meshes[t] = m;
             return m;
         }

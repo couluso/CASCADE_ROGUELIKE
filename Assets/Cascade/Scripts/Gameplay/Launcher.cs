@@ -1,28 +1,40 @@
 // CASCADE — Auteur : Coulu
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace Cascade
 {
     /// <summary>
-    /// Lanceur en laiton en haut de la planche : suit la souris (entre DropMinX et DropMaxX), montre la prochaine bille
-    /// et une trajectoire fantôme partielle (2 rebonds de base, plus avec la Boussole, aucune contre L'Aveugle).
+    /// Lanceur en laiton en haut de la planche : va et vient tout seul entre DropMinX et DropMaxX et montre la prochaine bille.
+    /// Clic ou Espace : lâcher la bille là où se trouve le chariot (vitesse modifiée par la Boussole et L'Aveugle).
+    /// Construit dans la scène (Tools > Cascade > Construire la scène) ; à défaut, au lancement.
     /// </summary>
+    [DefaultExecutionOrder(-80)]
     public class Launcher : MonoBehaviour
     {
-        public bool active;
+        [System.NonSerialized] public bool active;
         public float AimX { get; private set; }
 
-        GameManager gm;
-        Transform carriage;
-        Renderer nextBall;
-        LineRenderer ghost;
-        readonly List<Vector3> points = new List<Vector3>();
+        [SerializeField] GameManager gm;
+        [SerializeField] Transform carriage;
+        [SerializeField] Renderer nextBall;
+        [Tooltip("Vitesse du va-et-vient, en unités par seconde.")]
+        [SerializeField] float sweepSpeed = 2.6f;
+        float sweep;
         Color nextColor = Color.white;
 
-        public void Init(GameManager gm)
+        public bool IsBuilt => carriage != null && nextBall != null;
+
+        void Awake()
         {
-            this.gm = gm;
+            if (!IsBuilt) Build();
+            if (gm == null) gm = FindAnyObjectByType<GameManager>();
+        }
+
+        public void SetGameManager(GameManager manager) => gm = manager;
+
+        /// <summary>Rail, chariot et bille suivante, sous cet objet.</summary>
+        public void Build()
+        {
             transform.position = new Vector3(0f, BoardLayout.DropY, 0f);
 
             // Rail du lanceur
@@ -42,20 +54,6 @@ namespace Cascade
 
             var mat = Mats.Get("NextBall", new Color(0.85f, 0.86f, 0.9f), 0.85f, 0.88f, new Color(0.01f, 0.01f, 0.01f));
             nextBall = Mats.Prim(PrimitiveType.Sphere, carriage, Vector3.zero, Vector3.one * BoardLayout.BallRadius * 2f, mat, "NextBall").GetComponent<Renderer>();
-
-            var go = new GameObject("Ghost");
-            go.transform.SetParent(transform, false);
-            ghost = go.AddComponent<LineRenderer>();
-            ghost.material = Sprites.TrailMaterial;
-            ghost.widthMultiplier = 0.05f;
-            ghost.numCapVertices = 4;
-            ghost.useWorldSpace = true;
-            ghost.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            var grad = new Gradient();
-            grad.SetKeys(
-                new[] { new GradientColorKey(new Color(1f, 0.95f, 0.8f), 0f), new GradientColorKey(Palette.Gold, 1f) },
-                new[] { new GradientAlphaKey(0.7f, 0f), new GradientAlphaKey(0f, 1f) });
-            ghost.colorGradient = grad;
         }
 
         public void ShowNext(BallInstance ball, bool hidden)
@@ -72,56 +70,15 @@ namespace Cascade
 
         void Update()
         {
+            if (gm == null || gm.Run == null) return;
             nextBall.gameObject.SetActive(active);
-            ghost.enabled = active;
             if (!active) return;
 
-            if (Arcade.Instance != null)
-                AimX = Mathf.Clamp(Arcade.Instance.MouseOnBoard().x, BoardLayout.DropMinX, BoardLayout.DropMaxX);
-
-            var target = new Vector3(AimX, 0f, 0f);
-            carriage.localPosition = Vector3.Lerp(carriage.localPosition, target, 1f - Mathf.Exp(-Time.unscaledDeltaTime * 25f));
-            DrawGhost();
-        }
-
-        void DrawGhost()
-        {
-            int bounces = gm.PreviewBounces;
-            if (bounces <= 0) { ghost.positionCount = 0; return; }
-
-            var ball = gm.PeekNextBall();
-            var info = Catalog.Ball(ball != null ? ball.kind : BallKind.Standard);
-            float radius = BoardLayout.BallRadius * info.radiusMul * (gm.Run.HasBoss(BossType.Colossus) ? 1.2f : 1f);
-            Vector2 g = Physics2D.gravity * BoardLayout.BallGravityScale * info.gravityScale;
-            Vector2 p = new Vector2(AimX, BoardLayout.DropY);
-            Vector2 v = Vector2.zero;
-            float dt = 0.02f;
-            const float z = -0.34f;
-            points.Clear();
-            points.Add(new Vector3(p.x, p.y, z));
-            int hits = 0;
-            for (int step = 0; step < 300 && hits < bounces; step++)
-            {
-                v += g * dt;
-                v *= 1f / (1f + dt * BoardLayout.BallDrag);
-                Vector2 delta = v * dt;
-                float dist = delta.magnitude;
-                if (dist < 1e-5f) continue;
-                var hit = Physics2D.CircleCast(p, radius * 0.95f, delta / dist, dist);
-                if (hit.collider != null && !hit.collider.isTrigger)
-                {
-                    p = hit.centroid + hit.normal * 0.01f;
-                    float vn = Vector2.Dot(v, hit.normal);
-                    if (vn < 0f) v -= (1f + info.bounce) * vn * hit.normal;
-                    hits++;
-                }
-                else p += delta;
-                if (step % 2 == 0) points.Add(new Vector3(p.x, p.y, z));
-                if (p.y < 0.3f) break;
-            }
-            points.Add(new Vector3(p.x, p.y, z));
-            ghost.positionCount = points.Count;
-            ghost.SetPositions(points.ToArray());
+            // Va-et-vient automatique entre DropMinX et DropMaxX ; le temps de jeu (Horloger, ralenti) le ralentit aussi.
+            float span = BoardLayout.DropMaxX - BoardLayout.DropMinX;
+            sweep = Mathf.Repeat(sweep + Time.deltaTime * sweepSpeed * gm.SweepSpeed / span, 2f);
+            AimX = BoardLayout.DropMinX + Mathf.PingPong(sweep, 1f) * span;
+            carriage.localPosition = new Vector3(AimX, 0f, 0f);
         }
     }
 }

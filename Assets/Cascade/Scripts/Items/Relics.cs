@@ -32,11 +32,12 @@ namespace Cascade
 
         public virtual float SlotValueMultiplier => 1f;
         public virtual int ShopDiscount => 0;
-        public virtual int ExtraPreviewBounces => 0;
+        /// <summary>Multiplie la vitesse du va-et-vient du lanceur (moins de 1 : plus facile de viser).</summary>
+        public virtual float SweepSpeedMultiplier => 1f;
         public virtual float TimeScale => 1f;
         public virtual bool GrantsBrake => false;
 
-        protected void Fire(GameManager gm) => gm.NotifyRelicFired(this);
+        protected void Fire(GameManager gm) { if (gm != null) gm.NotifyRelicFired(this); }
         protected static Vector3 At(ScoreContext c) => c.controller != null ? c.controller.transform.position : Vector3.zero;
     }
 
@@ -266,9 +267,9 @@ namespace Cascade
     {
         public override string Id => "compass";
         public override string Name => "La Boussole";
-        public override string Desc => "Affiche une trajectoire fantôme beaucoup plus longue.";
+        public override string Desc => "Le lanceur se déplace 40 % moins vite : plus facile de viser.";
         public override Rarity Rarity => Rarity.Rare;
-        public override int ExtraPreviewBounces => 10;
+        public override float SweepSpeedMultiplier => 0.6f;
     }
 
     public class Brake : Relic
@@ -296,10 +297,9 @@ namespace Cascade
     {
         public override string Id => "clock";
         public override string Name => "L'Horloger";
-        public override string Desc => "Le temps ralentit de 30 % en permanence et la trajectoire fantôme s'allonge.";
+        public override string Desc => "Le temps ralentit de 30 % en permanence (le lanceur aussi).";
         public override Rarity Rarity => Rarity.Legendary;
         public override float TimeScale => 0.7f;
-        public override int ExtraPreviewBounces => 3;
     }
 
     /// <summary>Copie la relique à sa droite.</summary>
@@ -333,7 +333,7 @@ namespace Cascade
         public override void OnSeuilCleared(GameManager gm) => Right?.OnSeuilCleared(gm);
         public override float SlotValueMultiplier => Right?.SlotValueMultiplier ?? 1f;
         public override int ShopDiscount => Right?.ShopDiscount ?? 0;
-        public override int ExtraPreviewBounces => Right?.ExtraPreviewBounces ?? 0;
+        public override float SweepSpeedMultiplier => Right?.SweepSpeedMultiplier ?? 1f;
         public override float TimeScale => Right?.TimeScale ?? 1f;
         public override bool GrantsBrake => Right?.GrantsBrake ?? false;
     }

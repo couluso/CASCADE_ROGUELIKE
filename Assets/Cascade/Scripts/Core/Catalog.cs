@@ -78,7 +78,7 @@ namespace Cascade
             BossType.NorthWind => new BossInfo { name = "Le Vent du Nord", desc = "Un vent latéral aléatoire souffle à chaque lancer." },
             BossType.IceWall => new BossInfo { name = "Le Mur de Glace", desc = "Tous les pics se brisent au premier contact." },
             BossType.Cheater => new BossInfo { name = "Le Tricheur", desc = "Les cases changent de valeur après chaque bille." },
-            BossType.Blind => new BossInfo { name = "L'Aveugle", desc = "Pas de trajectoire fantôme, prochaine bille cachée." },
+            BossType.Blind => new BossInfo { name = "L'Aveugle", desc = "Prochaine bille cachée, le lanceur va plus vite." },
             BossType.Banker => new BossInfo { name = "Le Banquier", desc = "Les cases valent moitié, les jetons sont doublés." },
             BossType.Colossus => new BossInfo { name = "Le Colosse", desc = "Une seule bille géante. Jetons x5. Tout ou rien." },
             _ => new BossInfo { name = "", desc = "" }

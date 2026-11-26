@@ -60,19 +60,41 @@ namespace Cascade
         public bool IsFinalSeuil => act == 3 && IsBoss && !endless;
 
         // ---------------- Cibles ----------------
-        // Base de chaque acte (petit seuil). Moyen = x1,5, Boss = x2. Endless : x4 par acte.
-        static readonly double[] ActBase = { 800, 3600, 16000 };
+        // Une manche se joue toujours jusqu'à la dernière bille : le surplus rapporte des tickets.
+        // Courbe continue d'un seuil au suivant (x1,6 par seuil), les boss demandent 20 % de plus,
+        // et l'endless accélère (+25 % de croissance par acte au-delà du 3e).
+        public const double TargetBase = 650, TargetGrowth = 1.6, BossFactor = 1.2, EndlessAcceleration = 1.25;
 
-        public double TargetFor(int a, int s)
+        public static double TargetFor(int a, int s)
         {
-            double b = a <= 3 ? ActBase[a - 1] : ActBase[2] * System.Math.Pow(4, a - 3);
-            double k = s == 0 ? 1 : s == 1 ? 1.5 : 2;
-            return System.Math.Round(b * k / 50) * 50;
+            int i = (a - 1) * 3 + s;
+            double t = TargetBase * System.Math.Pow(TargetGrowth, i);
+            if (s == 2) t *= BossFactor;
+            if (a > 3) t *= System.Math.Pow(EndlessAcceleration, (a - 3) * (a - 2) / 2.0);
+            return RoundNice(t);
+        }
+
+        /// <summary>Arrondi lisible : deux chiffres significatifs (1 997 → 2 000, 33 503 → 34 000).</summary>
+        public static double RoundNice(double v)
+        {
+            if (v < 100) return System.Math.Round(v);
+            double mag = System.Math.Pow(10, System.Math.Floor(System.Math.Log10(v)) - 1);
+            return System.Math.Round(v / mag) * mag;
         }
 
         public double Target => TargetFor(act, seuilIndex);
 
-        public int BaseReward => seuilIndex == 0 ? 3 : seuilIndex == 1 ? 4 : 5;
+        public static int RewardFor(int s) => s == 0 ? 3 : s == 1 ? 4 : 5;
+        public int BaseReward => RewardFor(seuilIndex);
+
+        /// <summary>Tickets bonus selon le surplus : 4 par doublement de la cible (x1,19 → 1, x2 → 4, x4 → 8), 10 au plus.</summary>
+        public const int SurplusCap = 10;
+
+        public static int SurplusBonus(double score, double target)
+        {
+            if (target <= 0 || score <= target) return 0;
+            return System.Math.Min(SurplusCap, (int)System.Math.Floor(4 * System.Math.Log(score / target, 2) + 1e-9));
+        }
 
         public int Interest => Mathf.Min(5, tickets / 5);
 
